@@ -58,6 +58,10 @@ def push(brief, url=None):
         "Markdown": "yes",
     }
     if url:
+        # A date stamp makes each morning's link unique, so phones never open a
+        # cached copy of yesterday's brief.
+        sep = "&" if "?" in url else "?"
+        url = f"{url}{sep}d={brief['date']}"
         headers["Click"] = url
         headers["Actions"] = f"view, Open dashboard, {url}"
 

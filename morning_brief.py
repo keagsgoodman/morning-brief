@@ -67,6 +67,27 @@ def g(d, *path, default=None):
     return default if cur is None else cur
 
 
+def find_key(obj, key, depth=0):
+    """Depth-first search for the first non-null value of `key` anywhere in a
+    nested payload. Garmin moves these fields between releases; searching for
+    them by name survives that."""
+    if depth > 8 or obj is None:
+        return None
+    if isinstance(obj, dict):
+        if obj.get(key) is not None:
+            return obj[key]
+        for v in obj.values():
+            r = find_key(v, key, depth + 1)
+            if r is not None:
+                return r
+    elif isinstance(obj, list):
+        for v in obj:
+            r = find_key(v, key, depth + 1)
+            if r is not None:
+                return r
+    return None
+
+
 def mean(xs):
     xs = [x for x in xs if x is not None]
     return statistics.fmean(xs) if xs else None
@@ -335,19 +356,26 @@ def build_metrics(raw):
     m["garmin_readiness_feedback"] = r.get("feedbackShort")
 
     # --- training load ------------------------------------------------------
-    ts = raw.get("training_status") or {}
-    rec = g(ts, "mostRecentTrainingLoadBalance", "metricsTrainingLoadBalanceDTOMap", default={}) or {}
-    load = next(iter(rec.values()), {}) if isinstance(rec, dict) else {}
-    m["acute_load"] = load.get("monthlyLoadAerobicLow") and None  # placeholder, filled below
-    tstat = g(ts, "mostRecentTrainingStatus", "latestTrainingStatusData", default={}) or {}
-    tsd = next(iter(tstat.values()), {}) if isinstance(tstat, dict) else {}
-    m["training_status"] = tsd.get("trainingStatusFeedbackPhrase") or tsd.get("trainingStatus")
-    m["acute_load"] = tsd.get("acuteTrainingLoadDTO", {}).get("acuteTrainingLoad") if isinstance(
-        tsd.get("acuteTrainingLoadDTO"), dict) else None
-    m["load_ratio"] = tsd.get("acwr") or g(tsd, "acuteTrainingLoadDTO", "dailyAcuteChronicWorkloadRatio")
-    m["vo2max"] = (g(raw, "max_metrics", 0, "generic", "vo2MaxPreciseValue")
-                   or g(raw, "max_metrics", 0, "generic", "vo2MaxValue"))
-    m["fitness_age"] = g(raw, "max_metrics", 0, "generic", "fitnessAge")
+    ts = raw.get("training_status")
+    status = (find_key(ts, "trainingStatusFeedbackPhrase") or find_key(ts, "trainingStatus"))
+    if isinstance(status, str):
+        m["training_status"] = status.replace("_", " ").title()
+    m["acute_load"] = find_key(ts, "acuteTrainingLoad")
+    m["load_ratio"] = (find_key(ts, "dailyAcuteChronicWorkloadRatio") or find_key(ts, "acwr"))
+    mm = raw.get("max_metrics")
+    m["vo2max"] = find_key(mm, "vo2MaxPreciseValue") or find_key(mm, "vo2MaxValue")
+    m["fitness_age"] = find_key(mm, "fitnessAge")
+
+    # overnight recharge: sleep payload first, else today's body battery charge
+    if m.get("bb_overnight_charge") is None:
+        bb = raw.get("body_battery")
+        if isinstance(bb, list):
+            for entry in bb:
+                if str(g(entry, "date", default=""))[:10] == raw.get("date"):
+                    m["bb_overnight_charge"] = find_key(entry, "charged")
+                    break
+            if m.get("bb_overnight_charge") is None and bb:
+                m["bb_overnight_charge"] = find_key(bb[-1], "charged")
     return m
 
 
@@ -500,12 +528,22 @@ def todays_session(raw, today):
     if not items and isinstance(sched, list):
         items = sched
     t = ds(today)
+    # Garmin's calendar carries completed activities, sleep and naps alongside
+    # planned workouts. Only the planned ones are "today's session".
+    SKIP = ("activity", "sleep", "nap", "all_day", "wellness", "event", "race")
     out = []
     for it in items:
         d = it.get("date") or it.get("scheduledDate") or it.get("calendarDate") or ""
         if str(d)[:10] != t:
             continue
+        kind = str(it.get("itemType") or it.get("type") or "").lower()
+        if any(k in kind for k in SKIP):
+            continue
         w = it.get("workout") or it
+        is_planned = (kind and "workout" in kind) or bool(
+            w.get("workoutId") or w.get("workoutName") or w.get("estimatedDurationInSecs"))
+        if not is_planned:
+            continue
         out.append({
             "title": w.get("workoutName") or it.get("title") or "Planned workout",
             "sport": (g(w, "sportType", "sportTypeKey") or it.get("itemType") or "").replace("_", " "),

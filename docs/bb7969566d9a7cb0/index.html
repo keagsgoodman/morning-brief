@@ -52,6 +52,15 @@ header.top{display:flex; justify-content:space-between; align-items:baseline; ga
   flex-wrap:wrap; padding-bottom:14px; border-bottom:1px solid var(--line); margin-bottom:20px}
 header.top h1{font-size:24px; font-weight:700; letter-spacing:-.015em}
 header.top .when{font-size:12px; color:var(--faint); letter-spacing:.06em; text-transform:uppercase}
+header.top .ctrl{display:flex; align-items:center; gap:14px; flex-wrap:wrap}
+.refresh{display:inline-flex; align-items:center; gap:7px; text-decoration:none;
+  background:var(--panel); border:1px solid var(--line); color:var(--ink);
+  border-radius:7px; padding:7px 13px; font-size:13px; font-weight:600;
+  transition:border-color .15s, background .15s}
+.refresh:hover{border-color:var(--accent); background:var(--panel-2)}
+.refresh:focus-visible{outline:2px solid var(--accent); outline-offset:2px}
+.refresh .ico{font-size:14px; line-height:1}
+.stale{color:var(--caution)}
 
 /* verdict */
 .verdict{display:grid; grid-template-columns:220px 1fr; gap:24px; align-items:center;
@@ -223,7 +232,10 @@ footer{margin-top:28px; padding-top:14px; border-top:1px solid var(--line);
 <div class="wrap">
   <header class="top">
     <h1>Sunday, 13 September 2026</h1>
-    <div class="when">Brief generated 21:32 · 5 of 5 inputs</div>
+    <div class="ctrl">
+      <div class="when">Updated <span id="ago" data-at="2026-09-13T21:38+02:00">21:38</span> · 5 of 5 inputs</div>
+      <a class="refresh" href="https://github.com/keagsgoodman/morning-brief/actions/workflows/brief.yml" target="_blank" rel="noopener" title="Opens GitHub — tap Run workflow to rebuild"><span class="ico">↻</span>Refresh</a>
+    </div>
   </header>
 
   <section class="verdict critical">
@@ -304,6 +316,22 @@ footer{margin-top:28px; padding-top:14px; border-top:1px solid var(--line);
   </footer>
 </div>
 <script>
+(function () {
+  var el = document.getElementById("ago");
+  if (el && el.dataset.at) {
+    var built = new Date(el.dataset.at);
+    var mins = Math.round((Date.now() - built) / 60000);
+    var txt = mins < 2 ? "just now"
+            : mins < 60 ? mins + " min ago"
+            : mins < 120 ? "an hour ago"
+            : mins < 1440 ? Math.round(mins / 60) + " hours ago"
+            : Math.round(mins / 1440) + " days ago";
+    el.textContent = txt;
+    if (mins > 720) el.className = "stale";
+    el.title = "Built " + el.dataset.at.replace("T", " ");
+  }
+})();
+
 (function () {
   var zoom = document.getElementById("zoom");
   var body = document.getElementById("zoom-body");

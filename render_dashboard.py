@@ -134,6 +134,83 @@ def bar_chart(series, ref=None, unit="", title=""):
             f'aria-label="{esc(title)}: latest {pts[-1][1]}{unit}">' + "".join(parts) + "</svg>")
 
 
+def stacked(parts, colors, unit="min"):
+    """Horizontal stacked bar with a legend. parts: list of (label, value)."""
+    parts = [(k, v) for k, v in parts if v]
+    total = sum(v for _, v in parts)
+    if not total:
+        return '<p class="empty">No data for last night.</p>'
+    segs, legend = "", ""
+    for i, (k, v) in enumerate(parts):
+        pct = v / total * 100
+        c = colors[i % len(colors)]
+        segs += (f'<div class="seg" style="width:{pct:.2f}%;background:var({c})" '
+                 f'title="{esc(k)} {v} {unit}"></div>')
+        hrs = f"{int(v)//60}h {int(v)%60:02d}m" if unit == "min" and v >= 60 else f"{v:g} {unit}"
+        legend += (f'<div class="lg"><span class="sw" style="background:var({c})"></span>'
+                   f'<span class="lk">{esc(k)}</span><span class="lv">{hrs}</span>'
+                   f'<span class="lp">{pct:.0f}%</span></div>')
+    return f'<div class="stack">{segs}</div><div class="legend">{legend}</div>'
+
+
+def goalbar(value, goal, unit=""):
+    if not value:
+        return '<p class="empty">No data yet.</p>'
+    pct = min(value / goal * 100, 100) if goal else None
+    done = goal and value >= goal
+    bar = (f'<div class="gb"><div class="gbf{" hit" if done else ""}" style="width:{pct:.1f}%"></div></div>'
+           if pct is not None else "")
+    sub = (f'<div class="gbl">{value:,.0f} of {goal:,.0f}{unit}'
+           f'{" — goal met" if done else f" ({goal - value:,.0f} to go)"}</div>'
+           if goal else f'<div class="gbl">{value:,.0f}{unit}</div>')
+    return bar + sub
+
+
+SCRIPT = """<script>
+(function () {
+  var zoom = document.getElementById("zoom");
+  var body = document.getElementById("zoom-body");
+  var opener = null;
+
+  function open(panel) {
+    body.innerHTML = panel.innerHTML;
+    zoom.hidden = false;
+    document.body.style.overflow = "hidden";
+    opener = panel;
+    zoom.querySelector(".zoom-close").focus();
+  }
+  function close() {
+    zoom.hidden = true;
+    body.innerHTML = "";
+    document.body.style.overflow = "";
+    if (opener) { opener.focus(); opener = null; }
+  }
+
+  document.querySelectorAll(".panel.zoomable").forEach(function (panel) {
+    panel.tabIndex = 0;
+    panel.setAttribute("role", "button");
+    panel.setAttribute("aria-label", "Enlarge this panel");
+    panel.addEventListener("click", function (e) {
+      // don't hijack a link, a button, or someone selecting text
+      if (e.target.closest("a, button")) return;
+      var sel = window.getSelection();
+      if (sel && sel.toString().length) return;
+      open(panel);
+    });
+    panel.addEventListener("keydown", function (e) {
+      if (e.key === "Enter" || e.key === " ") { e.preventDefault(); open(panel); }
+    });
+  });
+
+  zoom.addEventListener("click", function (e) { if (e.target === zoom) close(); });
+  zoom.querySelector(".zoom-close").addEventListener("click", close);
+  document.addEventListener("keydown", function (e) {
+    if (e.key === "Escape" && !zoom.hidden) close();
+  });
+})();
+</script>"""
+
+
 # ---------------------------------------------------------------- page
 
 CSS = """
@@ -145,6 +222,7 @@ CSS = """
   --good:#1F7A5C; --fair:#4A7FA8; --caution:#A8721C; --critical:#A83E33;
   --good-bg:#E2F1EB; --fair-bg:#E4EDF5; --caution-bg:#F7EDDA; --critical-bg:#F7E4E1;
   --sig:var(--accent);
+  --s1:#2F5D8C; --s2:#7FA8CF; --s3:#8E7AB5; --s4:#C3CAD4;
   --shadow:0 1px 2px rgba(20,26,34,.06), 0 8px 24px -12px rgba(20,26,34,.18);
 }
 @media (prefers-color-scheme: dark){
@@ -155,6 +233,7 @@ CSS = """
     --accent:#6FA8DC;
     --good:#5CC79E; --fair:#79B2DC; --caution:#E0A94B; --critical:#E27A6C;
     --good-bg:#122A24; --fair-bg:#14212E; --caution-bg:#2C2415; --critical-bg:#2E1B18;
+    --s1:#6FA8DC; --s2:#3E6B98; --s3:#A492CE; --s4:#46505F;
     --shadow:0 1px 2px rgba(0,0,0,.4), 0 8px 24px -12px rgba(0,0,0,.6);
   }
 }
@@ -165,6 +244,7 @@ CSS = """
   --accent:#6FA8DC;
   --good:#5CC79E; --fair:#79B2DC; --caution:#E0A94B; --critical:#E27A6C;
   --good-bg:#122A24; --fair-bg:#14212E; --caution-bg:#2C2415; --critical-bg:#2E1B18;
+  --s1:#6FA8DC; --s2:#3E6B98; --s3:#A492CE; --s4:#46505F;
   --shadow:0 1px 2px rgba(0,0,0,.4), 0 8px 24px -12px rgba(0,0,0,.6);
 }
 *{box-sizing:border-box}
@@ -252,6 +332,79 @@ header.top .when{font-size:12px; color:var(--faint); letter-spacing:.06em; text-
 .bd .s{font-family:"IBM Plex Mono",monospace; font-size:13px; text-align:right;
   font-variant-numeric:tabular-nums}
 .bd .d{grid-column:1/-1; font-size:12px; color:var(--faint); margin-top:-6px}
+
+/* stacked bars */
+.stack{display:flex; height:14px; border-radius:7px; overflow:hidden; background:var(--track)}
+.seg{height:100%}
+.legend{display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:4px 18px; margin-top:12px}
+.lg{display:flex; align-items:center; gap:8px; font-size:13px}
+.sw{width:9px; height:9px; border-radius:2px; flex:none}
+.lk{color:var(--muted)}
+.lv{margin-left:auto; font-family:"IBM Plex Mono",monospace; font-variant-numeric:tabular-nums}
+.lp{width:34px; text-align:right; color:var(--faint); font-family:"IBM Plex Mono",monospace}
+
+/* goal bar */
+.gb{height:10px; background:var(--track); border-radius:5px; overflow:hidden}
+.gbf{height:100%; background:var(--accent); border-radius:5px}
+.gbf.hit{background:var(--good)}
+.gbl{margin-top:8px; font-size:13px; color:var(--muted); font-variant-numeric:tabular-nums}
+.big{font-family:"IBM Plex Mono",monospace; font-size:36px; font-weight:600;
+  font-variant-numeric:tabular-nums; line-height:1.1; margin-bottom:10px}
+.big span{font-size:15px; color:var(--muted); font-weight:400}
+.tiles{display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:14px 10px; margin-top:16px;
+  padding-top:14px; border-top:1px solid var(--line)}
+.tile .tv{font-family:"IBM Plex Mono",monospace; font-size:18px; font-weight:600;
+  font-variant-numeric:tabular-nums}
+.tile .tk{font-size:11px; letter-spacing:.08em; text-transform:uppercase; color:var(--faint)}
+
+/* click to enlarge */
+.panel{position:relative}
+.panel.zoomable{cursor:zoom-in}
+.panel.zoomable::after{content:"⤢"; position:absolute; top:12px; right:14px;
+  color:var(--faint); font-size:13px; opacity:.5; transition:opacity .15s}
+.panel.zoomable:hover::after{opacity:1}
+.panel.zoomable:focus-visible{outline:2px solid var(--accent); outline-offset:2px}
+.zoom[hidden]{display:none}
+.zoom{position:fixed; inset:0; z-index:50; background:rgba(10,14,20,.62);
+  display:flex; align-items:center; justify-content:center; padding:24px;
+  backdrop-filter:blur(3px)}
+.zoom-inner{background:var(--panel); border:1px solid var(--line); border-radius:12px;
+  width:min(900px,100%); max-height:88vh; overflow:auto; padding:26px 28px;
+  box-shadow:0 24px 64px -16px rgba(0,0,0,.5); position:relative}
+.zoom-close{position:absolute; top:14px; right:14px; background:var(--panel-2);
+  border:1px solid var(--line); color:var(--muted); border-radius:6px;
+  padding:5px 11px; font:inherit; font-size:13px; cursor:pointer}
+.zoom-close:hover{color:var(--ink); border-color:var(--muted)}
+.zoom-inner h3{font-size:13px; letter-spacing:.12em; text-transform:uppercase;
+  color:var(--faint); font-weight:600; margin-bottom:16px}
+.zoom-inner .legend{grid-template-columns:repeat(2,minmax(0,1fr))}
+.zoom-inner table{min-width:0}
+@media (max-width:720px){
+  .tiles{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .legend{grid-template-columns:1fr}
+  .zoom{padding:10px}
+  .zoom-inner{padding:20px 16px}
+}
+
+/* week ahead */
+.week{display:grid; grid-template-columns:repeat(7,minmax(0,1fr)); gap:1px;
+  background:var(--line); border:1px solid var(--line); border-radius:8px; overflow:hidden}
+.wday{background:var(--panel); padding:11px 10px; min-height:92px;
+  display:flex; flex-direction:column; gap:3px}
+.wday.is-today{background:var(--panel-2); box-shadow:inset 0 3px 0 var(--accent)}
+.wday .d{font-size:11px; letter-spacing:.08em; text-transform:uppercase; color:var(--faint)}
+.wday .t{font-size:13px; font-weight:600; line-height:1.3}
+.wday .m{font-family:"IBM Plex Mono",monospace; font-size:11px; color:var(--muted);
+  font-variant-numeric:tabular-nums}
+.wday .rest{font-size:12px; color:var(--faint)}
+.wksum{margin-top:10px; font-size:13px; color:var(--muted)}
+.wksum b{font-family:"IBM Plex Mono",monospace; color:var(--ink); font-weight:600}
+@media (max-width:720px){
+  .week{grid-template-columns:1fr}
+  .wday{min-height:0; flex-direction:row; align-items:baseline; gap:10px; padding:9px 12px}
+  .wday .d{width:58px; flex:none}
+  .wday .t{flex:1}
+}
 
 /* chart + table */
 .chart{width:100%; height:auto; display:block}
@@ -381,6 +534,78 @@ def render_html(b):
             ("Fitness age", num(f.get("fitness_age"))),
         ] if v != "—" or k in ("VO2 max", "Training status"))
 
+    # --- week ahead
+    wt = b.get("week_totals") or {}
+    cells = ""
+    for day in b.get("week", []):
+        inner = ""
+        for x in day["sessions"]:
+            meta = " · ".join(str(y) for y in [
+                f'{x["duration_min"]} min' if x.get("duration_min") else None,
+                f'{x["distance_km"]:g} km' if x.get("distance_km") else None] if y)
+            inner += f'<div class="t">{esc(x["title"])}</div>'
+            if meta:
+                inner += f'<div class="m">{meta}</div>'
+        if not inner:
+            inner = '<div class="rest">Rest</div>'
+        cells += (f'<div class="wday{" is-today" if day["is_today"] else ""}">'
+                  f'<div class="d">{esc(day["weekday"])} {day["dom"]}</div>{inner}</div>')
+    week_panel = ""
+    if cells:
+        summary = (f'<div class="wksum"><b>{wt.get("count", 0)}</b> session'
+                   f'{"" if wt.get("count") == 1 else "s"} planned'
+                   + (f' · <b>{wt["km"]:g}</b> km' if wt.get("km") else "")
+                   + (f' · <b>{wt["hours"]:g}</b> h' if wt.get("hours") else "")
+                   + '</div>')
+        week_panel = (f'<div class="grid"><div class="panel zoomable"><h3>The week ahead</h3>'
+                      f'<div class="week">{cells}</div>{summary}</div></div>')
+
+    # --- movement ------------------------------------------------------------
+    steps_goal = goalbar(m.get("steps"), m.get("step_goal"), " steps")
+    tiles = "".join(
+        f'<div class="tile"><div class="tv">{v}</div><div class="tk">{esc(k)}</div></div>'
+        for k, v in [
+            ("Floors", num(m.get("floors"))),
+            ("Active kcal", f'{m["active_kcal"]:,}' if m.get("active_kcal") else "—"),
+            ("Walked", num(m.get("walk_km"), " km", 1)),
+            ("HR range", f'{m["min_hr"]}–{m["max_hr"]}' if m.get("min_hr") and m.get("max_hr") else "—"),
+            ("7-day avg steps", f'{m["steps_7d"]:,}' if m.get("steps_7d") else "—"),
+            ("Steps this week", f'{m["steps_week"]:,}' if m.get("steps_week") else "—"),
+            ("Intensity min/wk", num(m.get("intensity_week"))),
+            ("Body Battery", f'{m["bb_low"]}–{m["bb_high"]}' if m.get("bb_high") else "—"),
+        ])
+    movement = (f'<div class="panel zoomable"><h3>Movement today</h3>'
+                f'<div class="big">{m["steps"]:,}<span> steps</span></div>' if m.get("steps")
+                else '<div class="panel zoomable"><h3>Movement today</h3>')
+    movement += steps_goal + f'<div class="tiles">{tiles}</div></div>'
+
+    sleep_stages = ""
+    if m.get("sleep_stages"):
+        sleep_stages = (f'<div class="panel zoomable"><h3>Last night&rsquo;s sleep</h3>'
+                        + stacked(list(m["sleep_stages"].items()),
+                                  ["--s1", "--s2", "--s3", "--s4"])
+                        + (f'<div class="gbl">{m["sleep_hours"]} h in bed'
+                           + (f' · score {m["sleep_score"]}' if m.get("sleep_score") else "")
+                           + '</div>')
+                        + '</div>')
+
+    stress_panel = ""
+    if m.get("stress_split"):
+        stress_panel = (f'<div class="panel zoomable"><h3>Stress through the day</h3>'
+                        + stacked([("Rest", m["stress_split"]["rest"]),
+                                   ("Low", m["stress_split"]["low"]),
+                                   ("Medium", m["stress_split"]["medium"]),
+                                   ("High", m["stress_split"]["high"])],
+                                  ["--good", "--fair", "--caution", "--critical"])
+                        + (f'<div class="gbl">Average {m["stress_avg"]}'
+                           + (f' · usual {m["stress_baseline"]}' if m.get("stress_baseline") else "")
+                           + '</div>' if m.get("stress_avg") else "")
+                        + '</div>')
+
+    steps_chart = bar_chart(m.get("steps_series", []), ref=m.get("step_goal"),
+                            unit="", title="Steps")
+    kcal_chart = bar_chart(m.get("kcal_series", []), unit=" kcal", title="Active calories")
+
     # --- charts
     hrv_chart = line_chart(m.get("hrv_series", []), band_lo=m.get("hrv_baseline_low"),
                            band_hi=m.get("hrv_baseline_high"), unit=" ms", title="HRV")
@@ -394,7 +619,7 @@ def render_html(b):
     strava_note = ""
     if sv:
         gear = " · ".join(f'{esc(x["name"])} {x["km"]:g} km' for x in sv.get("gear", [])[:3] if not x.get("retired"))
-        strava_note = (f'<div class="panel"><h3>Strava cross-check</h3><div class="rows">'
+        strava_note = (f'<div class="panel zoomable"><h3>Strava cross-check</h3><div class="rows">'
                        f'<div class="row"><span class="lab">Running this year</span>'
                        f'<span class="val">{sv["ytd_run_km"]:g} km · {sv["ytd_run_count"]} runs</span></div>'
                        f'<div class="row"><span class="lab">Last 4 weeks</span>'
@@ -430,12 +655,12 @@ def render_html(b):
   </section>
 
   <div class="grid g2">
-    <div class="panel risk {rcls}">
+    <div class="panel risk zoomable {rcls}">
       <h3>Illness risk</h3>
       <div class="lvl">{esc(ill["level"])}</div>
       {reasons}
     </div>
-    <div class="panel session">
+    <div class="panel session zoomable">
       <h3>Today&rsquo;s session</h3>
       {sess}
     </div>
@@ -443,24 +668,47 @@ def render_html(b):
 
   <div class="grid"><div class="stats">{stat_cells}</div></div>
 
+  {week_panel}
+
   <div class="grid g2">
-    <div class="panel"><h3>Readiness breakdown</h3><div class="bd">{bd}</div></div>
-    <div class="panel"><h3>This morning&rsquo;s numbers</h3><div class="rows">{metric_rows}</div></div>
+    {movement}
+    <div class="panel zoomable"><h3>Steps, {len(m.get("steps_series", []))} days</h3>{steps_chart}</div>
   </div>
 
   <div class="grid g2">
-    <div class="panel"><h3>HRV vs your balanced range</h3>{hrv_chart}</div>
-    <div class="panel"><h3>Resting heart rate, {len(m.get("rhr_series", []))} days</h3>{rhr_chart}</div>
-    <div class="panel"><h3>Sleep hours</h3>{sleep_chart}</div>
-    <div class="panel"><h3>Weekly distance</h3>{week_chart}</div>
+    {sleep_stages}
+    {stress_panel}
   </div>
 
   <div class="grid g2">
-    <div class="panel"><h3>Recent sessions</h3>{recent_tbl}</div>
-    <div class="panel"><h3>Fitness</h3><div class="rows">{fit_rows}</div></div>
+    <div class="panel zoomable"><h3>Readiness breakdown</h3><div class="bd">{bd}</div></div>
+    <div class="panel zoomable"><h3>This morning&rsquo;s numbers</h3><div class="rows">{metric_rows}</div></div>
+  </div>
+
+  <div class="grid g2">
+    <div class="panel zoomable"><h3>HRV vs your balanced range</h3>{hrv_chart}</div>
+    <div class="panel zoomable"><h3>Resting heart rate, {len(m.get("rhr_series", []))} days</h3>{rhr_chart}</div>
+    <div class="panel zoomable"><h3>Weekly distance</h3>{week_chart}</div>
+  </div>
+
+  <div class="grid g2">
+    <div class="panel zoomable"><h3>Recent sessions</h3>{recent_tbl}</div>
+    <div class="panel zoomable"><h3>Fitness</h3><div class="rows">{fit_rows}</div></div>
+  </div>
+
+  <div class="grid g2">
+    <div class="panel zoomable"><h3>Active calories</h3>{kcal_chart}</div>
+    <div class="panel zoomable"><h3>Sleep hours</h3>{sleep_chart}</div>
   </div>
 
   {f'<div class="grid">{strava_note}</div>' if strava_note else ""}
+
+  <div class="zoom" id="zoom" hidden>
+    <div class="zoom-inner" role="dialog" aria-modal="true" aria-label="Enlarged panel">
+      <button class="zoom-close" type="button">Close</button>
+      <div id="zoom-body"></div>
+    </div>
+  </div>
 
   <footer>
     Readiness is a weighted blend of HRV against your personal baseline, sleep, resting heart rate,
@@ -468,4 +716,5 @@ def render_html(b):
     Illness risk is a points model over resting HR, HRV, breathing rate, blood oxygen, recharge and stress.
     Neither is a medical assessment.
   </footer>
-</div>'''
+</div>
+{SCRIPT}'''

@@ -206,10 +206,19 @@ def collect_garmin(api, today):
                 "date": ds(d),
                 "rhr": s.get("restingHeartRate"),
                 "steps": s.get("totalSteps"),
+                "step_goal": s.get("dailyStepGoal"),
                 "stress": s.get("averageStressLevel"),
                 "bb_high": s.get("bodyBatteryHighestValue"),
                 "bb_low": s.get("bodyBatteryLowestValue"),
+                "moderate": s.get("moderateIntensityMinutes") or 0,
+                "vigorous": s.get("vigorousIntensityMinutes") or 0,
                 "intensity": (s.get("moderateIntensityMinutes") or 0) + 2 * (s.get("vigorousIntensityMinutes") or 0),
+                "floors": s.get("floorsAscended"),
+                "active_kcal": s.get("activeKilocalories"),
+                "total_kcal": s.get("totalKilocalories"),
+                "distance_m": s.get("totalDistanceMeters"),
+                "min_hr": s.get("minHeartRate"),
+                "max_hr": s.get("maxHeartRate"),
                 "sleep_sec": s.get("sleepingSeconds"),
             })
     raw["daily_history"] = hist
@@ -242,8 +251,10 @@ def collect_garmin(api, today):
     raw["sleep_history"] = nights
 
     log("garmin: planned workouts")
-    sched = safe(api.get_scheduled_workouts, today.year, today.month) or {}
-    raw["scheduled"] = sched
+    raw["scheduled"] = safe(api.get_scheduled_workouts, today.year, today.month) or {}
+    nxt = today + timedelta(days=7)
+    raw["scheduled_next"] = ({} if nxt.month == today.month else
+                             (safe(api.get_scheduled_workouts, nxt.year, nxt.month) or {}))
 
     log("garmin: activities")
     jan1 = date(today.year, 1, 1)
@@ -369,6 +380,40 @@ def build_metrics(raw):
     m["stress_avg"] = g(raw, "stats", "averageStressLevel")
     prior_stress = [d["stress"] for d in hist[1:] if d.get("stress") and d["stress"] > 0]
     m["stress_baseline"] = round(mean(prior_stress), 1) if prior_stress else None
+
+    # --- daily activity -----------------------------------------------------
+    st = raw.get("stats") or {}
+    today_row = hist[0] if hist else {}
+    m["steps"] = st.get("totalSteps") or today_row.get("steps")
+    m["step_goal"] = st.get("dailyStepGoal") or today_row.get("step_goal")
+    m["floors"] = st.get("floorsAscended")
+    m["active_kcal"] = st.get("activeKilocalories")
+    m["total_kcal"] = st.get("totalKilocalories")
+    m["walk_km"] = round((st.get("totalDistanceMeters") or 0) / M_PER_KM, 2) or None
+    m["min_hr"] = st.get("minHeartRate")
+    m["max_hr"] = st.get("maxHeartRate")
+    prior_steps = [d["steps"] for d in hist[1:8] if d.get("steps")]
+    m["steps_7d"] = round(mean(prior_steps)) if prior_steps else None
+    m["steps_series"] = [(d["date"], d["steps"]) for d in reversed(hist) if d.get("steps")]
+    m["steps_week"] = sum(d["steps"] or 0 for d in hist[:7]) or None
+    m["intensity_week"] = sum(d["intensity"] or 0 for d in hist[:7]) or None
+    m["floors_week"] = sum(d["floors"] or 0 for d in hist[:7]) or None
+    m["kcal_series"] = [(d["date"], d["active_kcal"]) for d in reversed(hist) if d.get("active_kcal")]
+
+    # stress split, in minutes
+    parts = {k: (st.get(f"{k}StressDuration") or 0) / 60 for k in ("rest", "low", "medium", "high")}
+    m["stress_split"] = {k: round(v) for k, v in parts.items()} if sum(parts.values()) else None
+
+    # last night's sleep stages, in minutes
+    if last.get("seconds"):
+        deep = (last.get("deep") or 0) / 60
+        rem = (last.get("rem") or 0) / 60
+        awake = (last.get("awake") or 0) / 60
+        light = max((last["seconds"] / 60) - deep - rem - awake, 0)
+        m["sleep_stages"] = {"Deep": round(deep), "Light": round(light),
+                             "REM": round(rem), "Awake": round(awake)}
+    m["bb_high"] = st.get("bodyBatteryHighestValue")
+    m["bb_low"] = st.get("bodyBatteryLowestValue")
 
     # --- Garmin's own readiness --------------------------------------------
     r = raw.get("readiness")
@@ -540,33 +585,39 @@ def illness_risk(m):
     return {"level": level, "points": pts, "reasons": reasons, "advice": advice}
 
 
-def todays_session(raw, today):
-    """Today's planned workout, from the TrainingPeaks -> Garmin calendar sync."""
-    sched = raw.get("scheduled") or {}
-    items = []
+SKIP_ITEM_TYPES = ("activity", "sleep", "nap", "all_day", "wellness", "event", "race")
+
+
+def _calendar_items(payload):
+    if isinstance(payload, list):
+        return payload
     for key in ("calendarItems", "workoutScheduleList", "items"):
-        v = sched.get(key)
+        v = (payload or {}).get(key)
         if isinstance(v, list):
-            items = v
-            break
-    if not items and isinstance(sched, list):
-        items = sched
-    t = ds(today)
-    # Garmin's calendar carries completed activities, sleep and naps alongside
-    # planned workouts. Only the planned ones are "today's session".
-    SKIP = ("activity", "sleep", "nap", "all_day", "wellness", "event", "race")
+            return v
+    return []
+
+
+def planned_items(raw):
+    """Every calendar entry Garmin knows about, this month and next."""
+    return _calendar_items(raw.get("scheduled")) + _calendar_items(raw.get("scheduled_next"))
+
+
+def planned_on(items, day):
+    """Planned workouts for one date. Garmin's calendar also carries completed
+    activities, sleep and naps; those are not sessions you are due to do."""
+    t = ds(day)
     out = []
     for it in items:
         d = it.get("date") or it.get("scheduledDate") or it.get("calendarDate") or ""
         if str(d)[:10] != t:
             continue
         kind = str(it.get("itemType") or it.get("type") or "").lower()
-        if any(k in kind for k in SKIP):
+        if any(k in kind for k in SKIP_ITEM_TYPES):
             continue
         w = it.get("workout") or it
-        is_planned = (kind and "workout" in kind) or bool(
-            w.get("workoutId") or w.get("workoutName") or w.get("estimatedDurationInSecs"))
-        if not is_planned:
+        if not ((kind and "workout" in kind) or w.get("workoutId")
+                or w.get("workoutName") or w.get("estimatedDurationInSecs")):
             continue
         out.append({
             "title": w.get("workoutName") or it.get("title") or "Planned workout",
@@ -576,6 +627,30 @@ def todays_session(raw, today):
             "description": (w.get("description") or "")[:600],
         })
     return out
+
+
+def todays_session(raw, today):
+    return planned_on(planned_items(raw), today)
+
+
+def week_ahead(raw, today, days=7):
+    """Today plus the next six days of planned sessions."""
+    items = planned_items(raw)
+    out = []
+    for i in range(days):
+        d = today + timedelta(days=i)
+        out.append({"date": ds(d), "weekday": d.strftime("%a"), "dom": d.day,
+                    "is_today": i == 0, "sessions": planned_on(items, d)})
+    return out
+
+
+def week_totals(week):
+    sessions = [x for day in week for x in day["sessions"]]
+    return {
+        "count": len(sessions),
+        "km": round(sum(x["distance_km"] or 0 for x in sessions), 1),
+        "hours": round(sum(x["duration_min"] or 0 for x in sessions) / 60, 1),
+    }
 
 
 def distance_stats(acts, today, strava):
@@ -683,6 +758,8 @@ def build_brief(raw, strava, today):
                else "Train as planned" if (adjusted or 0) < 80
                else "Green light — go hard if the plan says so")
 
+    _week = week_ahead(raw, today)
+
     return {
         "generated_at": datetime.now(TZ).isoformat(timespec="minutes"),
         "date": ds(today),
@@ -695,6 +772,8 @@ def build_brief(raw, strava, today):
         "illness": illness,
         "metrics": m,
         "planned": todays_session(raw, today),
+        "week": _week,
+        "week_totals": week_totals(_week),
         "stats": distance_stats(acts, today, strava),
         "recent": recent_activities(acts, today),
         "fitness": {"vo2max": m.get("vo2max"), "fitness_age": m.get("fitness_age"),
@@ -728,8 +807,13 @@ def synthetic_raw(today, sick=False):
     for i in range(STATS_DAYS):
         d = today - timedelta(days=i)
         hist.append({"date": ds(d), "rhr": 52 + (8 if (sick and i == 0) else (i % 3) - 1),
-                     "steps": 9000, "stress": 40 if (sick and i == 0) else 27,
-                     "bb_high": 88, "bb_low": 20, "intensity": 45, "sleep_sec": 26000})
+                     "steps": 9000 + (i % 5) * 900, "step_goal": 10000,
+                     "stress": 40 if (sick and i == 0) else 27,
+                     "bb_high": 88, "bb_low": 20, "intensity": 45,
+                     "moderate": 25, "vigorous": 10, "floors": 12,
+                     "active_kcal": 780 + (i % 4) * 60, "total_kcal": 2900,
+                     "distance_m": 8000, "min_hr": 44, "max_hr": 168,
+                     "sleep_sec": 26000})
     acts = []
     for i in range(0, 120, 3):
         d = today - timedelta(days=i)
@@ -743,7 +827,13 @@ def synthetic_raw(today, sick=False):
                                "status": "UNBALANCED" if sick else "BALANCED",
                                "baseline": {"lowUpper": 48, "balancedAverage": 58, "upperBalanced": 68}}},
         "stats": {"restingHeartRate": hist[0]["rhr"], "averageStressLevel": hist[0]["stress"],
-                  "bodyBatteryHighestValue": 88, "bodyBatteryMostRecentValue": 70},
+                  "bodyBatteryHighestValue": 88, "bodyBatteryLowestValue": 22,
+                  "bodyBatteryMostRecentValue": 70,
+                  "totalSteps": 11420, "dailyStepGoal": 10000, "floorsAscended": 14,
+                  "activeKilocalories": 890, "totalKilocalories": 2980,
+                  "totalDistanceMeters": 9120, "minHeartRate": 44, "maxHeartRate": 171,
+                  "restStressDuration": 21600, "lowStressDuration": 14400,
+                  "mediumStressDuration": 5400, "highStressDuration": 1800},
         "readiness": [{"score": 34 if sick else 81, "level": "LOW" if sick else "HIGH",
                        "feedbackShort": "RECOVERY_LOW" if sick else "READY"}],
         "sleep_history": nights, "daily_history": hist,
@@ -751,7 +841,16 @@ def synthetic_raw(today, sick=False):
         "training_status": {}, "max_metrics": [{"generic": {"vo2MaxPreciseValue": 54.2, "fitnessAge": 29}}],
         "race_predictions": {"time5K": 1210, "time10K": 2530, "timeHalfMarathon": 5580, "timeMarathon": 11820},
         "activities_ytd": acts,
-        "scheduled": {"calendarItems": [{"date": ds(today), "workout": {
+        "scheduled": {"calendarItems": [
+            {"date": ds(today + timedelta(days=1)), "itemType": "workout", "workout": {
+                "workoutName": "Easy 45", "sportType": {"sportTypeKey": "running"},
+                "estimatedDurationInSecs": 2700, "estimatedDistanceInMeters": 8000}},
+            {"date": ds(today + timedelta(days=2)), "itemType": "activity",
+             "title": "Completed walk (should be ignored)"},
+            {"date": ds(today + timedelta(days=3)), "itemType": "workout", "workout": {
+                "workoutName": "Long run", "sportType": {"sportTypeKey": "running"},
+                "estimatedDurationInSecs": 6600, "estimatedDistanceInMeters": 22000}},
+            {"date": ds(today), "itemType": "workout", "workout": {
             "workoutName": "Threshold 4 x 8 min", "sportType": {"sportTypeKey": "running"},
             "estimatedDurationInSecs": 3900, "estimatedDistanceInMeters": 13000,
             "description": "4 x 8 min at threshold, 2 min float between."}}]},

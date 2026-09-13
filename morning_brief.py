@@ -128,14 +128,23 @@ def garmin_client():
     exposed to rate limiting and cannot answer an MFA challenge."""
     from garminconnect import Garmin
     token = os.environ.get("GARMIN_TOKEN", "").strip()
-    if token:
-        api = Garmin()
-        api.login(tokenstore=token)
-        log("garmin: authenticated with stored token")
-        return api
-
     email = os.environ.get("GARMIN_EMAIL", "").strip()
     pw = os.environ.get("GARMIN_PASSWORD", "")
+
+    if token:
+        try:
+            api = Garmin()
+            api.login(tokenstore=token)
+            log("garmin: authenticated with stored token")
+            return api
+        except Exception as e:
+            # An expired, truncated or mistyped token must not kill the brief
+            # when a working password is also on file.
+            log(f"garmin: stored token unusable ({type(e).__name__}); "
+                f"{'falling back to password' if (email and pw) else 'no password to fall back on'}")
+            if not (email and pw):
+                raise
+
     if not (email and pw):
         raise SystemExit("Set GARMIN_TOKEN, or GARMIN_EMAIL and GARMIN_PASSWORD.")
     api = Garmin(email, pw)

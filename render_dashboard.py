@@ -185,6 +185,113 @@ def goalbar(value, goal, unit=""):
 
 SCRIPT = """<script>
 (function () {
+  // ---- one-tap refresh -----------------------------------------------------
+  var btn = document.getElementById("refresh");
+  var dlg = document.getElementById("setup");
+  if (!btn) return;
+
+  var REPO = btn.dataset.repo, WF = btn.dataset.wf, KEY = "mb_gh_token";
+  var lbl = btn.querySelector(".lbl");
+  var started = 0, timer = null;
+
+  function token() { try { return localStorage.getItem(KEY) || ""; } catch (e) { return ""; } }
+  function setToken(v) { try { v ? localStorage.setItem(KEY, v) : localStorage.removeItem(KEY); } catch (e) {} }
+
+  function state(cls, text, disabled) {
+    btn.className = "refresh" + (cls ? " " + cls : "");
+    lbl.textContent = text;
+    btn.disabled = !!disabled;
+  }
+  function reset(msg) {
+    clearInterval(timer);
+    state("", msg || "Refresh", false);
+  }
+  function fail(msg) {
+    clearInterval(timer);
+    state("err", msg, false);
+    setTimeout(function () { if (btn.classList.contains("err")) reset(); }, 6000);
+  }
+  function openSetup() { dlg.hidden = false; document.getElementById("tok").focus(); }
+  function closeSetup() { dlg.hidden = true; }
+
+  function api(path, opts) {
+    opts = opts || {};
+    opts.headers = Object.assign({
+      "Accept": "application/vnd.github+json",
+      "Authorization": "Bearer " + token(),
+      "X-GitHub-Api-Version": "2022-11-28"
+    }, opts.headers || {});
+    return fetch("https://api.github.com/repos/" + REPO + path, opts);
+  }
+
+  function poll() {
+    api("/actions/runs?per_page=5").then(function (r) { return r.json(); }).then(function (d) {
+      var runs = (d.workflow_runs || []).filter(function (r) {
+        return new Date(r.created_at).getTime() >= started - 60000;
+      });
+      var elapsed = Math.round((Date.now() - started) / 1000);
+      var done = runs.find(function (r) { return r.status === "completed"; });
+      if (done) {
+        clearInterval(timer);
+        if (done.conclusion !== "success") { fail("Run failed"); return; }
+        state("busy", "Publishing\u2026", true);
+        // Pages needs a moment to serve the new file
+        setTimeout(function () {
+          location.replace(location.pathname + "?t=" + Date.now());
+        }, 9000);
+        return;
+      }
+      state("busy", "Refreshing\u2026 " + elapsed + "s", true);
+      if (elapsed > 240) fail("Timed out");
+    }).catch(function () { /* transient network, keep polling */ });
+  }
+
+  function run() {
+    if (!token()) { openSetup(); return; }
+    state("busy", "Starting\u2026", true);
+    api("/actions/workflows/" + WF + "/dispatches", {
+      method: "POST",
+      body: JSON.stringify({ ref: "main" })
+    }).then(function (r) {
+      if (r.status === 204) {
+        started = Date.now();
+        state("busy", "Refreshing\u2026 0s", true);
+        clearInterval(timer);
+        timer = setInterval(poll, 5000);
+        setTimeout(poll, 3000);
+      } else if (r.status === 401 || r.status === 403 || r.status === 404) {
+        setToken("");
+        reset();
+        openSetup();
+      } else {
+        fail("Error " + r.status);
+      }
+    }).catch(function () { fail("No connection"); });
+  }
+
+  btn.addEventListener("click", run);
+  document.getElementById("tok-save").addEventListener("click", function () {
+    var v = document.getElementById("tok").value.trim();
+    if (!v) return;
+    setToken(v);
+    document.getElementById("tok").value = "";
+    closeSetup();
+    run();
+  });
+  document.getElementById("tok-forget").addEventListener("click", function () {
+    setToken(""); closeSetup(); reset("Refresh");
+  });
+  dlg.querySelector("[data-close]").addEventListener("click", closeSetup);
+  dlg.addEventListener("click", function (e) { if (e.target === dlg) closeSetup(); });
+  document.addEventListener("keydown", function (e) {
+    if (e.key === "Escape" && !dlg.hidden) closeSetup();
+  });
+  document.getElementById("tok").addEventListener("keydown", function (e) {
+    if (e.key === "Enter") document.getElementById("tok-save").click();
+  });
+})();
+
+(function () {
   var el = document.getElementById("ago");
   if (el && el.dataset.at) {
     var built = new Date(el.dataset.at);
@@ -379,7 +486,28 @@ header.top .ctrl{display:flex; align-items:center; gap:14px; flex-wrap:wrap}
   transition:border-color .15s, background .15s}
 .refresh:hover{border-color:var(--accent); background:var(--panel-2)}
 .refresh:focus-visible{outline:2px solid var(--accent); outline-offset:2px}
-.refresh .ico{font-size:14px; line-height:1}
+.refresh .ico{font-size:14px; line-height:1; display:inline-block}
+.refresh{cursor:pointer; font-family:inherit}
+.refresh[disabled]{cursor:default; color:var(--muted)}
+.refresh.busy .ico{animation:spin 1.1s linear infinite}
+.refresh.err{border-color:var(--critical); color:var(--critical)}
+@keyframes spin{to{transform:rotate(360deg)}}
+@media (prefers-reduced-motion:reduce){.refresh.busy .ico{animation:none}}
+.setup{max-width:520px}
+.setup p{margin:0 0 12px; font-size:14px; color:var(--muted); line-height:1.6}
+.setup ol{margin:0 0 14px; padding-left:20px; font-size:14px; line-height:1.7}
+.setup code{font-family:"IBM Plex Mono",monospace; font-size:12.5px; background:var(--panel-2);
+  padding:1px 5px; border-radius:4px}
+.setup input{width:100%; font-family:"IBM Plex Mono",monospace; font-size:13px;
+  padding:9px 11px; border:1px solid var(--line); border-radius:7px;
+  background:var(--panel-2); color:var(--ink)}
+.setup .row{display:flex; gap:10px; margin-top:12px; flex-wrap:wrap}
+.setup button{font:inherit; font-size:13px; font-weight:600; padding:8px 15px;
+  border-radius:7px; cursor:pointer; border:1px solid var(--line);
+  background:var(--panel-2); color:var(--ink)}
+.setup button.primary{background:var(--accent); border-color:var(--accent); color:#fff}
+.setup a{color:var(--accent)}
+.setup .note{font-size:12.5px; color:var(--faint); margin-top:14px}
 .stale{color:var(--caution)}
 
 /* verdict */
@@ -695,9 +823,9 @@ def render_html(b):
 
     repo = os.environ.get("GITHUB_REPOSITORY", "").strip()
     refresh_btn = (
-        f'<a class="refresh" href="https://github.com/{esc(repo)}/actions/workflows/brief.yml" '
-        f'target="_blank" rel="noopener" title="Opens GitHub — tap Run workflow to rebuild">'
-        f'<span class="ico">\u21bb</span>Refresh</a>') if repo else ""
+        f'<button class="refresh" id="refresh" type="button" data-repo="{esc(repo)}" '
+        f'data-wf="brief.yml"><span class="ico">\u21bb</span><span class="lbl">Refresh</span>'
+        f'</button>') if repo else ""
 
     # --- movement ------------------------------------------------------------
     steps_goal = goalbar(m.get("steps"), m.get("step_goal"), " steps")
@@ -846,6 +974,30 @@ def render_html(b):
   </div>
 
   {f'<div class="grid">{strava_note}</div>' if strava_note else ""}
+
+  <div class="zoom" id="setup" hidden>
+    <div class="zoom-inner setup" role="dialog" aria-modal="true" aria-label="Set up one-tap refresh">
+      <button class="zoom-close" type="button" data-close>Close</button>
+      <h3>One-tap refresh</h3>
+      <p>To rebuild without leaving this page, your browser needs permission to start
+         the job. The token below is stored only on this device &mdash; it is never in
+         the page, the repo, or anywhere I can see it.</p>
+      <ol>
+        <li>Open <a href="https://github.com/settings/personal-access-tokens/new" target="_blank" rel="noopener">
+            GitHub &rarr; fine-grained tokens</a>.</li>
+        <li>Repository access: <b>Only select repositories</b> &rarr; this one.</li>
+        <li>Permissions &rarr; Repository &rarr; <b>Actions</b>: <code>Read and write</code>.</li>
+        <li>Generate it and paste it here.</li>
+      </ol>
+      <input id="tok" type="password" placeholder="github_pat_..." autocomplete="off" spellcheck="false">
+      <div class="row">
+        <button class="primary" id="tok-save" type="button">Save and refresh</button>
+        <button id="tok-forget" type="button">Forget token</button>
+      </div>
+      <p class="note">Anyone with this unlocked device could use it to start a rebuild
+         &mdash; nothing else. Revoke it on GitHub at any time.</p>
+    </div>
+  </div>
 
   <div class="zoom" id="zoom" hidden>
     <div class="zoom-inner" role="dialog" aria-modal="true" aria-label="Enlarged panel">

@@ -99,6 +99,14 @@ def line_chart(series, baseline=None, band_lo=None, band_hi=None, unit="", title
                  f'stroke-linejoin="round" stroke-linecap="round"/>')
     lx, lv = pts[-1]
     parts.append(f'<circle cx="{X(len(pts)-1):.1f}" cy="{Y(lv):.1f}" r="4.5" fill="var(--sig)"/>')
+    parts.append('<circle class="hdot" r="5.5" fill="var(--sig)" stroke="var(--panel)" '
+                 'stroke-width="2" opacity="0" pointer-events="none"/>')
+    slice_w = (W - PL - PR) / max(len(pts) - 1, 1)
+    for i, (lab, v) in enumerate(pts):
+        parts.append(
+            f'<rect class="hit" x="{X(i) - slice_w / 2:.1f}" y="{PT}" width="{slice_w:.1f}" '
+            f'height="{H - PT - PB}" fill="transparent" data-l="{esc(lab)}" data-v="{v:g}" '
+            f'data-u="{esc(unit)}" data-cx="{X(i):.1f}" data-cy="{Y(v):.1f}"/>')
     for v in (vmin + pad, vmax - pad):
         parts.append(f'<text x="{PL-8}" y="{Y(v)+4:.1f}" class="ctick" text-anchor="end">{v:.0f}</text>')
     parts.append(f'<text x="{PL}" y="{H-6}" class="ctick">{esc(pts[0][0][5:])}</text>')
@@ -122,12 +130,19 @@ def bar_chart(series, ref=None, unit="", title=""):
         parts.append(f'<line x1="{PL}" y1="{y:.1f}" x2="{W-PR}" y2="{y:.1f}" stroke="var(--line)" '
                      f'stroke-width="1" stroke-dasharray="4 4"/>')
         parts.append(f'<text x="{W-PR}" y="{y-5:.1f}" class="ctick" text-anchor="end">{ref:g}{unit}</text>')
+    hits = []
     for i, (lab, v) in enumerate(pts):
         h = (v / vmax) * (H - PT - PB)
         x = PL + i * bw + bw * 0.18
         last = i == len(pts) - 1
-        parts.append(f'<rect x="{x:.1f}" y="{H-PB-h:.1f}" width="{bw*0.64:.1f}" height="{max(h,1):.1f}" '
-                     f'rx="2" fill="var(--sig)" opacity="{"1" if last else "0.45"}"/>')
+        parts.append(f'<rect class="bar" x="{x:.1f}" y="{H-PB-h:.1f}" width="{bw*0.64:.1f}" '
+                     f'height="{max(h,1):.1f}" rx="2" fill="var(--sig)" '
+                     f'opacity="{"1" if last else "0.45"}"/>')
+        # a full-height target makes small bars tappable on a phone
+        hits.append(f'<rect class="hit" x="{PL + i * bw:.1f}" y="{PT}" width="{bw:.1f}" '
+                    f'height="{H - PT - PB}" fill="transparent" data-l="{esc(lab)}" '
+                    f'data-v="{v:g}" data-u="{esc(unit)}" data-bar="{i}"/>')
+    parts.extend(hits)
     parts.append(f'<text x="{PL-8}" y="{PT+10}" class="ctick" text-anchor="end">{vmax:.0f}</text>')
     parts.append(f'<text x="{PL}" y="{H-6}" class="ctick">{esc(pts[0][0][5:])}</text>')
     parts.append(f'<text x="{W-PR}" y="{H-6}" class="ctick" text-anchor="end">{esc(pts[-1][0][5:])}</text>')
@@ -146,7 +161,8 @@ def stacked(parts, colors, unit="min"):
         pct = v / total * 100
         c = colors[i % len(colors)]
         segs += (f'<div class="seg" style="width:{pct:.2f}%;background:var({c})" '
-                 f'title="{esc(k)} {v} {unit}"></div>')
+                 f'data-l="{esc(k)}" data-v="{v:g}" data-u=" {esc(unit)}" '
+                 f'data-p="{pct:.0f}"></div>')
         hrs = f"{int(v)//60}h {int(v)%60:02d}m" if unit == "min" and v >= 60 else f"{v:g} {unit}"
         legend += (f'<div class="lg"><span class="sw" style="background:var({c})"></span>'
                    f'<span class="lk">{esc(k)}</span><span class="lv">{hrs}</span>'
@@ -182,6 +198,84 @@ SCRIPT = """<script>
     if (mins > 720) el.className = "stale";
     el.title = "Built " + el.dataset.at.replace("T", " ");
   }
+})();
+
+(function () {
+  var tip = document.createElement("div");
+  tip.className = "tip";
+  tip.innerHTML = '<div class="tl"></div><div class="tvv"></div>';
+  document.body.appendChild(tip);
+  var lit = null, pinned = false, pinTimer = null;
+
+  function fmt(n) {
+    n = Number(n);
+    return Math.abs(n) >= 1000 ? n.toLocaleString() : String(n);
+  }
+
+  function show(hit, x, y) {
+    var pct = hit.dataset.p ? " · " + hit.dataset.p + "%" : "";
+    tip.querySelector(".tl").textContent = hit.dataset.l || "";
+    tip.querySelector(".tvv").textContent = fmt(hit.dataset.v) + (hit.dataset.u || "") + pct;
+    tip.classList.add("on");
+    // keep it on screen near the edges
+    var w = tip.offsetWidth;
+    tip.style.left = Math.min(Math.max(x, w / 2 + 8), window.innerWidth - w / 2 - 8) + "px";
+    tip.style.top = Math.max(y - 12, 44) + "px";
+
+    var svg = hit.closest ? hit.closest("svg") : null;
+    document.querySelectorAll(".hdot").forEach(function (d) {
+      if (!svg || d !== svg.querySelector(".hdot")) d.setAttribute("opacity", "0");
+    });
+    if (svg) {
+      var dot = svg.querySelector(".hdot");
+      if (dot && hit.dataset.cx) {
+        dot.setAttribute("cx", hit.dataset.cx);
+        dot.setAttribute("cy", hit.dataset.cy);
+        dot.setAttribute("opacity", "1");
+      }
+      if (hit.dataset.bar !== undefined) {
+        var bars = svg.querySelectorAll(".bar");
+        if (lit) lit.classList.remove("lit");
+        lit = bars[+hit.dataset.bar];
+        if (lit) lit.classList.add("lit");
+      }
+    }
+  }
+
+  function hide(force) {
+    if (pinned && !force) return;       // a tapped value stays put on touch
+    tip.classList.remove("on");
+    document.querySelectorAll(".hdot").forEach(function (d) { d.setAttribute("opacity", "0"); });
+    if (lit) { lit.classList.remove("lit"); lit = null; }
+  }
+
+  function target(e) {
+    var el = e.target;
+    return el && el.closest ? el.closest("[data-v]") : null;
+  }
+
+  function unpin() { pinned = false; clearTimeout(pinTimer); }
+
+  document.addEventListener("pointermove", function (e) {
+    if (e.pointerType && e.pointerType !== "mouse") return;   // touch uses taps
+    var hit = target(e);
+    if (hit) show(hit, e.clientX, e.clientY); else hide();
+  });
+  document.addEventListener("pointerdown", function (e) {
+    var hit = target(e);
+    if (!hit) { unpin(); hide(true); return; }
+    show(hit, e.clientX, e.clientY);
+    if (e.pointerType && e.pointerType !== "mouse") {
+      pinned = true;                       // keep it readable after the finger lifts
+      clearTimeout(pinTimer);
+      pinTimer = setTimeout(function () { unpin(); hide(true); }, 4000);
+    }
+    e.stopPropagation();                   // tapping data is not tapping the panel
+  }, true);
+  document.addEventListener("click", function (e) {
+    if (target(e)) e.stopPropagation();
+  }, true);
+  window.addEventListener("scroll", function () { unpin(); hide(true); }, { passive: true });
 })();
 
 (function () {
@@ -298,9 +392,9 @@ header.top .ctrl{display:flex; align-items:center; gap:14px; flex-wrap:wrap}
 .verdict .sub{color:var(--muted); margin-top:6px; max-width:62ch}
 .gauge{width:100%; max-width:220px; height:auto; display:block}
 .gauge-num{font-family:"IBM Plex Mono",monospace; font-size:42px; font-weight:600;
-  fill:var(--ink); text-anchor:middle; font-variant-numeric:tabular-nums}
+  fill:var(--ink); text-anchor:middle; font-variant-numeric:tabular-nums; pointer-events:none}
 .gauge-lab{font-family:Archivo,sans-serif; font-size:11px; fill:var(--faint);
-  text-anchor:middle; letter-spacing:.14em; text-transform:uppercase}
+  text-anchor:middle; letter-spacing:.14em; text-transform:uppercase; pointer-events:none}
 
 /* generic panel */
 .panel{background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:18px 20px}
@@ -382,6 +476,19 @@ header.top .ctrl{display:flex; align-items:center; gap:14px; flex-wrap:wrap}
 .tile .tv{font-family:"IBM Plex Mono",monospace; font-size:18px; font-weight:600;
   font-variant-numeric:tabular-nums}
 .tile .tk{font-size:11px; letter-spacing:.08em; text-transform:uppercase; color:var(--faint)}
+
+/* chart tooltips */
+.hit{cursor:crosshair}
+.seg{cursor:pointer; transition:filter .12s}
+.seg:hover{filter:brightness(1.15)}
+.tip{position:fixed; z-index:60; pointer-events:none; opacity:0; transition:opacity .1s;
+  background:var(--panel); border:1px solid var(--line); border-radius:7px;
+  padding:7px 11px; box-shadow:var(--shadow); font-size:13px; white-space:nowrap;
+  transform:translate(-50%,-100%)}
+.tip.on{opacity:1}
+.tip .tl{color:var(--muted); font-size:11px; letter-spacing:.06em; text-transform:uppercase}
+.tip .tvv{font-family:"IBM Plex Mono",monospace; font-weight:600; font-variant-numeric:tabular-nums}
+.bar.lit{opacity:1 !important}
 
 /* click to enlarge */
 .panel{position:relative}

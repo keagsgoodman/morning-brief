@@ -1,5 +1,6 @@
 """Renders brief.json into an Artifact-ready HTML page (title + style + body content)."""
 
+import os
 from datetime import datetime
 
 # ---------------------------------------------------------------- formatting
@@ -168,6 +169,22 @@ def goalbar(value, goal, unit=""):
 
 SCRIPT = """<script>
 (function () {
+  var el = document.getElementById("ago");
+  if (el && el.dataset.at) {
+    var built = new Date(el.dataset.at);
+    var mins = Math.round((Date.now() - built) / 60000);
+    var txt = mins < 2 ? "just now"
+            : mins < 60 ? mins + " min ago"
+            : mins < 120 ? "an hour ago"
+            : mins < 1440 ? Math.round(mins / 60) + " hours ago"
+            : Math.round(mins / 1440) + " days ago";
+    el.textContent = txt;
+    if (mins > 720) el.className = "stale";
+    el.title = "Built " + el.dataset.at.replace("T", " ");
+  }
+})();
+
+(function () {
   var zoom = document.getElementById("zoom");
   var body = document.getElementById("zoom-body");
   var opener = null;
@@ -261,6 +278,15 @@ header.top{display:flex; justify-content:space-between; align-items:baseline; ga
   flex-wrap:wrap; padding-bottom:14px; border-bottom:1px solid var(--line); margin-bottom:20px}
 header.top h1{font-size:24px; font-weight:700; letter-spacing:-.015em}
 header.top .when{font-size:12px; color:var(--faint); letter-spacing:.06em; text-transform:uppercase}
+header.top .ctrl{display:flex; align-items:center; gap:14px; flex-wrap:wrap}
+.refresh{display:inline-flex; align-items:center; gap:7px; text-decoration:none;
+  background:var(--panel); border:1px solid var(--line); color:var(--ink);
+  border-radius:7px; padding:7px 13px; font-size:13px; font-weight:600;
+  transition:border-color .15s, background .15s}
+.refresh:hover{border-color:var(--accent); background:var(--panel-2)}
+.refresh:focus-visible{outline:2px solid var(--accent); outline-offset:2px}
+.refresh .ico{font-size:14px; line-height:1}
+.stale{color:var(--caution)}
 
 /* verdict */
 .verdict{display:grid; grid-template-columns:220px 1fr; gap:24px; align-items:center;
@@ -560,6 +586,12 @@ def render_html(b):
         week_panel = (f'<div class="grid"><div class="panel zoomable"><h3>The week ahead</h3>'
                       f'<div class="week">{cells}</div>{summary}</div></div>')
 
+    repo = os.environ.get("GITHUB_REPOSITORY", "").strip()
+    refresh_btn = (
+        f'<a class="refresh" href="https://github.com/{esc(repo)}/actions/workflows/brief.yml" '
+        f'target="_blank" rel="noopener" title="Opens GitHub — tap Run workflow to rebuild">'
+        f'<span class="ico">\u21bb</span>Refresh</a>') if repo else ""
+
     # --- movement ------------------------------------------------------------
     steps_goal = goalbar(m.get("steps"), m.get("step_goal"), " steps")
     tiles = "".join(
@@ -645,7 +677,10 @@ def render_html(b):
 <div class="wrap">
   <header class="top">
     <h1>{d.strftime("%A")}, {d.strftime("%-d %B %Y")}</h1>
-    <div class="when">Brief generated {esc(b["generated_at"][11:16])} · {esc(r["coverage"])}</div>
+    <div class="ctrl">
+      <div class="when">Updated <span id="ago" data-at="{esc(b["generated_at"])}">{esc(b["generated_at"][11:16])}</span> · {esc(r["coverage"])}</div>
+      {refresh_btn}
+    </div>
   </header>
 
   <section class="verdict {cls}">

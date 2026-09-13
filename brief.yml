@@ -1,0 +1,59 @@
+name: Morning brief
+
+on:
+  schedule:
+    # 04:00 UTC = 06:00 South Africa - the real brief, with the phone push.
+    # GitHub's scheduler can lag 5-20 min under load.
+    - cron: "0 4 * * *"
+    # Midday and early evening top-ups so steps, stress and Body Battery stay
+    # current if you open the page during the day. These stay silent.
+    - cron: "0 10 * * *"
+    - cron: "0 16 * * *"
+  workflow_dispatch:          # run it by hand from the Actions tab
+
+permissions:
+  contents: write
+
+concurrency:
+  group: morning-brief
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - run: pip install -r requirements.txt
+
+      - name: Build the brief
+        env:
+          GARMIN_TOKEN: ${{ secrets.GARMIN_TOKEN }}
+          GARMIN_EMAIL: ${{ secrets.GARMIN_EMAIL }}
+          GARMIN_PASSWORD: ${{ secrets.GARMIN_PASSWORD }}
+          STRAVA_CLIENT_ID: ${{ secrets.STRAVA_CLIENT_ID }}
+          STRAVA_CLIENT_SECRET: ${{ secrets.STRAVA_CLIENT_SECRET }}
+          STRAVA_REFRESH_TOKEN: ${{ secrets.STRAVA_REFRESH_TOKEN }}
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+          SITE_PATH: ${{ secrets.SITE_PATH }}
+          DASHBOARD_URL: ${{ secrets.DASHBOARD_URL }}
+          BRIEF_TZ: Africa/Johannesburg
+        # Only the morning run (and any run you start by hand) sends a push;
+        # the daytime top-ups refresh the page silently.
+        run: >-
+          python morning_brief.py --run --quiet
+          ${{ (github.event_name == 'schedule' && github.event.schedule != '0 4 * * *') && '--no-push' || '' }}
+
+      - name: Commit the rebuilt dashboard
+        run: |
+          git config user.name  "morning-brief"
+          git config user.email "actions@users.noreply.github.com"
+          git add docs
+          git diff --quiet --cached || git commit -m "brief $(date -u +%F)"
+          git push

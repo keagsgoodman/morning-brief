@@ -166,8 +166,23 @@ def collect_garmin(api, today):
     raw["body_battery"] = safe(api.get_body_battery, ds(today - timedelta(days=2)), t)
 
     log("garmin: training status & fitness")
-    raw["training_status"] = safe(api.get_training_status, t)
-    raw["max_metrics"] = safe(api.get_max_metrics, t)
+
+    def recent(fn, key, days=10):
+        """VO2 max and training status only refresh after a qualifying activity,
+        so today's date often returns nothing. Walk back until something lands."""
+        for j in range(days):
+            v = safe(fn, ds(today - timedelta(days=j)))
+            if v and find_key(v, key) is not None:
+                if j:
+                    log(f"  {key} found {j} day(s) back")
+                return v
+        return None
+
+    raw["training_status"] = (recent(api.get_training_status, "trainingStatus")
+                              or safe(api.get_training_status, t))
+    raw["max_metrics"] = (recent(api.get_max_metrics, "vo2MaxPreciseValue")
+                          or recent(api.get_max_metrics, "vo2MaxValue")
+                          or safe(api.get_max_metrics, t))
     raw["race_predictions"] = safe(api.get_race_predictions)
     raw["endurance"] = safe(api.get_endurance_score, ds(today - timedelta(days=28)), t)
     raw["hill"] = safe(api.get_hill_score, ds(today - timedelta(days=28)), t)
